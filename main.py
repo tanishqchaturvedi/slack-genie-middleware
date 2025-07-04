@@ -17,7 +17,8 @@ DATABRICKS_URL = os.getenv("DATABRICKS_URL")  # e.g., https://adb-xxx.azuredatab
 @app.post("/slack/events")
 async def slack_events(request: Request):
     data = await request.json()
-
+    print("🔔 Full event received:", data)
+    
     # Slack verification event
     if data.get("type") == "url_verification":
         return PlainTextResponse(content=data["challenge"])
@@ -56,9 +57,11 @@ def call_genie(question: str):
             "email": "slackbot@dream11.com"  # Replace with actual user if required
         }
     }
-
+    print("🔁 Calling Genie with:", payload)
     try:
         response = requests.post(url, headers=headers, json=payload)
+        print("📬 Genie response status:", response.status_code)
+        print("📬 Genie response body:", response.text)
         if response.status_code == 200:
             data = response.json()
             answer = data.get("answer", "✅ Genie responded but no answer found.")
@@ -82,6 +85,7 @@ def post_to_slack(channel: str, thread_ts: str, message: str):
         "text": message,
         "thread_ts": thread_ts
     }
-
+    print("📤 Posting to Slack:", payload)
     response = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
+    print("📨 Slack response:", response.status_code, response.text)
     print(f"✅ Slack post status: {response.status_code}")
