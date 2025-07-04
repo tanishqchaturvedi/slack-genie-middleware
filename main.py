@@ -7,11 +7,11 @@ app = FastAPI()
 async def slack_events(request: Request):
     data = await request.json()
 
-    # Handle Slack's URL verification
+    # ✅ 1. Handle Slack URL verification
     if data.get("type") == "url_verification":
-        return {"challenge": data.get("challenge")}
+        return JSONResponse(content={"challenge": data["challenge"]})
 
-    # Handle message events
+    # ✅ 2. Handle actual events like app_mention or message
     if data.get("type") == "event_callback":
         event = data.get("event", {})
         if event.get("type") in ["app_mention", "message"]:
@@ -19,11 +19,11 @@ async def slack_events(request: Request):
             text = event.get("text")
             channel = event.get("channel")
             thread_ts = event.get("thread_ts", event.get("ts"))
-
-            print("📩 New Message from Slack:")
+            
+            print("📩 New Slack Message:")
             print("User:", user)
             print("Text:", text)
             print("Channel:", channel)
-            print("Thread:", thread_ts)
+            print("Thread TS:", thread_ts)
 
     return JSONResponse(content={"ok": True})
