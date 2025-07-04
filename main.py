@@ -90,6 +90,11 @@ def post_to_slack(channel: str, thread_ts: str, message: str):
     print("📨 Slack response:", response.status_code, response.text)
     print(f"✅ Slack post status: {response.status_code}")
 
+@app.get("/")
+def health_check():
+    return {"status": "✅ App running"}
+
+
 if __name__ == "__main__":
     import uvicorn
     import os
