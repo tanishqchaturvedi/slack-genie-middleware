@@ -92,5 +92,6 @@ def post_to_slack(channel: str, thread_ts: str, message: str):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))  # Render provides PORT env var
+    import os
+    port = int(os.environ.get("PORT", 8000))  # Render sets this PORT
     uvicorn.run("main:app", host="0.0.0.0", port=port)
