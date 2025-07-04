@@ -1,28 +1,26 @@
 import os
-import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
+import uvicorn
 
 app = FastAPI()
 
 @app.get("/")
-def health_check():
-    return {"status": "✅ Genie middleware is running"}
+def root():
+    return {"status": "ok"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
     data = await request.json()
-    print("🔔 Event received:", data)
-    
-    # Slack URL verification
+    print("🔔 Received Slack Event:", data)
+
     if data.get("type") == "url_verification":
         return PlainTextResponse(content=data["challenge"])
-    
-    # Example event handling (add your logic later)
+
     return PlainTextResponse("ok")
 
-
 if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", "8000"))  # no fallback to 10000!
+    # ✅ Use only PORT from environment
+    port = int(os.environ.get("PORT", "3000"))  # DO NOT default to 10000
+    print(f"🚀 Starting on port {port}")
     uvicorn.run("main:app", host="0.0.0.0", port=port)
