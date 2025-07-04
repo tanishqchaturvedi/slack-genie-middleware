@@ -89,3 +89,8 @@ def post_to_slack(channel: str, thread_ts: str, message: str):
     response = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
     print("📨 Slack response:", response.status_code, response.text)
     print(f"✅ Slack post status: {response.status_code}")
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))  # Render provides PORT env var
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
