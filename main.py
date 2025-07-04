@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import PlainTextResponse
 
 app = FastAPI()
 
@@ -7,9 +7,10 @@ app = FastAPI()
 async def slack_events(request: Request):
     data = await request.json()
 
-    # ✅ Correct: respond to Slack's URL verification
+    # ✅ Respond to Slack's URL verification
     if data.get("type") == "url_verification":
         challenge = data.get("challenge")
-        return JSONResponse(content={"challenge": challenge})
+        return PlainTextResponse(content=challenge)
 
-    return JSONResponse(content={"ok": True})
+    # Handle other event types (optional for now)
+    return PlainTextResponse(content="ok")
