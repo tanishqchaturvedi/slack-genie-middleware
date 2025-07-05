@@ -4,6 +4,7 @@ import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 import uvicorn
+from collections import deque
 
 app = FastAPI()
 
@@ -11,6 +12,9 @@ SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN")
 DATABRICKS_URL = os.getenv("DATABRICKS_URL")
 GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID")
+
+# In-memory store for recent Slack event_ids to avoid duplicate processing
+PROCESSED_EVENT_IDS = deque(maxlen=1000)
 
 HEADERS = {
     "Authorization": f"Bearer {DATABRICKS_TOKEN}",
@@ -26,9 +30,18 @@ async def slack_events(request: Request):
     data = await request.json()
     print("🔔 Received Slack Event:", data)
 
+    # Handle Slack URL verification
     if data.get("type") == "url_verification":
         return PlainTextResponse(content=data["challenge"])
 
+    # Deduplication using event_id
+    event_id = data.get("event_id")
+    if event_id in PROCESSED_EVENT_IDS:
+        print(f"⚠️ Skipping duplicate event: {event_id}")
+        return PlainTextResponse("ok")
+    PROCESSED_EVENT_IDS.append(event_id)
+
+    # Process the event
     if data.get("type") == "event_callback":
         event = data.get("event", {})
         if event.get("type") in ["app_mention", "message"] and "bot_id" not in event:
