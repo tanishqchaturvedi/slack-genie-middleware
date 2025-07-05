@@ -7,9 +7,10 @@ import uvicorn
 
 app = FastAPI()
 
+# 🔐 Load config from env variables
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN")
-DATABRICKS_URL = os.getenv("DATABRICKS_URL")  # e.g., https://adb-xxxx.azuredatabricks.net
+DATABRICKS_URL = os.getenv("DATABRICKS_URL")  # e.g., https://adb-xxx.azuredatabricks.net
 GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID")
 
 HEADERS = {
@@ -28,11 +29,18 @@ async def slack_events(request: Request):
     data = await request.json()
     print("🔔 Received Slack Event:", data)
 
+    # ✅ Slack challenge verification
     if data.get("type") == "url_verification":
         return PlainTextResponse(content=data["challenge"])
 
+    # ✅ Handle actual messages
     if data.get("type") == "event_callback":
         event = data.get("event", {})
+
+        # 🚫 Prevent echo loops: ignore bot messages
+        if event.get("subtype") == "bot_message" or "bot_id" in event:
+            return PlainTextResponse("Ignored bot message")
+
         if event.get("type") == "app_mention":
             user_id = event.get("user")
             channel_id = event.get("channel")
@@ -42,85 +50,60 @@ async def slack_events(request: Request):
 
             print(f"📨 Question from {user_id}: {question}")
 
-            try:
-                convo_id, msg_id = start_conversation(question)
-                final_sql, final_result = poll_for_answer(convo_id, msg_id)
-                reply = f":speech_balloon: *SQL:*\n```{final_sql}```\n*Result:* {final_result}"
-                post_to_slack(channel_id, reply, thread_ts)
+            # 🔁 Step 1: Call Genie API
+            start_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/start-conversation"
+            payload = {
+                "messages": [{"role": "user", "content": question}]
+            }
 
-            except Exception as e:
-                print("❌ Genie API Error:", str(e))
-                post_to_slack(channel_id, f":x: Genie API Error: {str(e)}", thread_ts)
+            try:
+                res = requests.post(start_url, headers=HEADERS, json=payload)
+                res.raise_for_status()
+                convo = res.json()
+                convo_id = convo["conversation_id"]
+                msg_id = convo["message_id"]
+                print("🧠 Started conversation:", convo_id, msg_id)
+
+                # 🔁 Step 2: Poll for final response
+                final_answer = poll_for_answer(convo_id, msg_id)
+                post_to_slack(channel_id, final_answer, thread_ts=thread_ts)
+
+            except requests.exceptions.HTTPError as e:
+                print("❌ Genie API Error:", e)
+                post_to_slack(channel_id, f":x: Genie API Error: {str(e)}", thread_ts=thread_ts)
 
     return PlainTextResponse("ok")
 
 
 def extract_question_from_text(text):
+    """Removes the <@BOT_ID> mention and returns user question"""
     parts = text.strip().split(' ', 1)
     return parts[1] if len(parts) > 1 else text
 
 
-def start_conversation(question):
-    url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/start-conversation"
-    payload = {"content": question}
-
-    res = requests.post(url, headers=HEADERS, json=payload)
-    res.raise_for_status()
-
-    data = res.json()["message"]
-    convo_id = data["conversation_id"]
-    msg_id = data["id"]
-
-    print("🧠 Started conversation:", convo_id, msg_id)
-    return convo_id, msg_id
-
-
-def poll_for_answer(convo_id, msg_id, timeout=30):
-    url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}"
+def poll_for_answer(convo_id, msg_id, timeout=15):
+    poll_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}"
 
     for _ in range(timeout):
         time.sleep(1)
-        res = requests.get(url, headers=HEADERS)
+        res = requests.get(poll_url, headers=HEADERS)
         if res.status_code == 200:
             message = res.json()
+
             if message.get("status") == "COMPLETED":
-                sql, rows = extract_sql_and_rows(message)
-                return sql, rows
+                # 📄 Case 1: Natural language response
+                if message.get("content"):
+                    return f":speech_balloon: *Answer:*\n{message['content']}"
 
-    return "[timeout]", "[No result]"
+                # 📊 Case 2: SQL + attachment result
+                attachments = message.get("attachments", [])
+                if attachments:
+                    query = attachments[0].get("query", {}).get("query", "[No SQL]")
+                    return f":speech_balloon: *SQL:*\n```{query}```\n*Result:* _Query ran successfully_"
 
+                return ":speech_balloon: *Answer:* _No useful response_"
 
-def extract_sql_and_rows(message):
-    # If Genie gave a natural language answer
-    if message.get("content"):
-        return "[No SQL]", message["content"]
-
-    # Else, try to get SQL + data
-    attachments = message.get("attachments", [])
-    if not attachments:
-        return "[No SQL]", "_No rows returned._"
-
-    attachment = attachments[0]
-    query = attachment.get("query", {}).get("query", "[No SQL]")
-    attachment_id = attachment.get("attachment_id")
-
-    if not attachment_id:
-        return query, "_No attachment_id._"
-
-    result_url = (
-        f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/"
-        f"conversations/{message['conversation_id']}/messages/{message['message_id']}/query-result/{attachment_id}"
-    )
-    res = requests.get(result_url, headers=HEADERS)
-    res.raise_for_status()
-    result_json = res.json()
-
-    rows = result_json.get("statement_response", {}).get("result", {}).get("data_array", [])
-    if rows:
-        formatted = "\n".join(["\t".join(map(str, row)) for row in rows[:5]])
-        return query, f"```\n{formatted}\n```"
-
-    return query, "_No rows returned._"
+    return ":hourglass_flowing_sand: Timeout waiting for Genie response."
 
 
 def post_to_slack(channel, text, thread_ts=None):
