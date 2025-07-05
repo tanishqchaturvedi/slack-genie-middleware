@@ -91,16 +91,21 @@ def poll_for_answer(convo_id, msg_id, timeout=30):
 
 
 def extract_sql_and_rows(message):
+    # If Genie gave a natural language answer
+    if message.get("content"):
+        return "[No SQL]", message["content"]
+
+    # Else, try to get SQL + data
     attachments = message.get("attachments", [])
     if not attachments:
-        return "[No SQL]", "[No attachments]"
+        return "[No SQL]", "_No rows returned._"
 
     attachment = attachments[0]
     query = attachment.get("query", {}).get("query", "[No SQL]")
     attachment_id = attachment.get("attachment_id")
 
     if not attachment_id:
-        return query, "[No attachment_id]"
+        return query, "_No attachment_id._"
 
     result_url = (
         f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/"
@@ -114,6 +119,7 @@ def extract_sql_and_rows(message):
     if rows:
         formatted = "\n".join(["\t".join(map(str, row)) for row in rows[:5]])
         return query, f"```\n{formatted}\n```"
+
     return query, "_No rows returned._"
 
 
