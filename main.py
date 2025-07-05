@@ -53,7 +53,7 @@ async def slack_events(request: Request):
             # 🔁 Step 1: Call Genie API
             start_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/start-conversation"
             payload = {
-                "messages": [{"role": "user", "content": question}]
+                "content": question
             }
 
             try:
