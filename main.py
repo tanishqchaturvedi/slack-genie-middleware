@@ -7,103 +7,97 @@ import uvicorn
 
 app = FastAPI()
 
-# ✅ Load environment variables
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN")
-DATABRICKS_URL = os.getenv("DATABRICKS_URL")  # e.g. https://adb-xxx.azuredatabricks.net
+DATABRICKS_URL = os.getenv("DATABRICKS_URL")  # e.g., https://adb-xxxx.azuredatabricks.net
 GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID")
 
-# Genie API URL
-GENIE_API_URL = f"{DATABRICKS_URL}/api/genie/v1/spaces/{GENIE_SPACE_ID}"
-
-# Headers
-SLACK_HEADERS = {
-    "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
-    "Content-type": "application/json"
-}
-GENIE_HEADERS = {
+HEADERS = {
     "Authorization": f"Bearer {DATABRICKS_TOKEN}",
     "Content-Type": "application/json"
 }
 
+
 @app.get("/")
 def root():
     return {"status": "ok"}
+
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
     data = await request.json()
     print("🔔 Received Slack Event:", data)
 
-    # Slack URL verification challenge
+    # Handle URL Verification challenge from Slack
     if data.get("type") == "url_verification":
         return PlainTextResponse(content=data["challenge"])
 
+    # Process app_mention events
     if data.get("type") == "event_callback":
-        event = data["event"]
-        if "bot_id" in event:
-            return PlainTextResponse("ignore bot events")
+        event = data.get("event", {})
+        if event.get("type") == "app_mention":
+            user_id = event.get("user")
+            channel_id = event.get("channel")
+            full_text = event.get("text", "")
+            question = extract_question_from_text(full_text)
 
-        user = event.get("user")
-        channel = event.get("channel")
-        text = event.get("text", "")
+            print(f"📨 Question from {user_id}: {question}")
 
-        # Remove bot mention
-        question = " ".join(w for w in text.split() if not w.startswith("<@"))
-
-        try:
-            # Start Genie conversation
-            start_payload = {"messages": [{"role": "user", "content": question}]}
-            start_response = requests.post(
-                f"{GENIE_API_URL}/conversations/start",
-                headers=GENIE_HEADERS,
-                json=start_payload
-            )
-            start_response.raise_for_status()
-            convo_id = start_response.json()["conversation_id"]
-
-            # Poll for assistant's response
-            answer = "❌ No response from Genie."
-            for _ in range(10):
-                time.sleep(2)
-                messages_resp = requests.get(
-                    f"{GENIE_API_URL}/conversations/{convo_id}/messages",
-                    headers=GENIE_HEADERS
-                )
-                messages_resp.raise_for_status()
-                messages = messages_resp.json().get("messages", [])
-                completed = [
-                    m for m in messages if m["role"] == "assistant" and m.get("status") == "COMPLETED"
-                ]
-                if completed:
-                    answer = completed[0]["content"]
-                    break
-
-            # Send answer to Slack
-            slack_payload = {
-                "channel": channel,
-                "text": f":speech_balloon: *Answer:* {answer}"
+            # Step 1: Start conversation with Genie
+            start_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/start-conversation"
+            payload = {
+                "messages": [{"role": "user", "content": question}]
             }
-            slack_resp = requests.post(
-                "https://slack.com/api/chat.postMessage",
-                headers=SLACK_HEADERS,
-                json=slack_payload
-            )
-            print("📤 Slack Post Status:", slack_resp.status_code, "-", slack_resp.text)
 
-        except Exception as e:
-            print("❌ Genie API Error:", str(e))
-            error_payload = {
-                "channel": channel,
-                "text": f":x: Genie API Error: {str(e)}"
-            }
-            requests.post(
-                "https://slack.com/api/chat.postMessage",
-                headers=SLACK_HEADERS,
-                json=error_payload
-            )
+            try:
+                res = requests.post(start_url, headers=HEADERS, json=payload)
+                res.raise_for_status()
+                convo = res.json()
+                convo_id = convo["conversation_id"]
+                msg_id = convo["message_id"]
+                print("🧠 Started conversation:", convo_id, msg_id)
+
+                # Step 2: Poll for response
+                final_answer = poll_for_answer(convo_id, msg_id)
+                post_to_slack(channel_id, f":speech_balloon: *Answer:* {final_answer}")
+
+            except requests.exceptions.HTTPError as e:
+                print("❌ Genie API Error:", e)
+                post_to_slack(channel_id, f":x: Genie API Error: {str(e)}")
 
     return PlainTextResponse("ok")
+
+
+def extract_question_from_text(text):
+    # Removes bot mention like <@U0XXXXXXX> from the start of the message
+    parts = text.strip().split(' ', 1)
+    return parts[1] if len(parts) > 1 else text
+
+
+def poll_for_answer(convo_id, msg_id, timeout=15):
+    poll_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}"
+    for _ in range(timeout):
+        time.sleep(1)
+        res = requests.get(poll_url, headers=HEADERS)
+        if res.status_code == 200:
+            message = res.json()
+            if message.get("status") == "COMPLETED":
+                return message.get("content", "[No content found]")
+    return "[Timeout waiting for response from Genie]"
+
+
+def post_to_slack(channel, text):
+    slack_url = "https://slack.com/api/chat.postMessage"
+    headers = {
+        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "channel": channel,
+        "text": text
+    }
+    response = requests.post(slack_url, headers=headers, json=payload)
+    print("📤 Slack Post Status:", response.status_code, "-", response.text)
 
 
 if __name__ == "__main__":
