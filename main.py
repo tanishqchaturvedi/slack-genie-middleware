@@ -1,63 +1,26 @@
 import os
+import time
 import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
-import uvicorn
+from pydantic import BaseModel
+
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN")
+DATABRICKS_URL = os.getenv("DATABRICKS_URL")  # e.g., https://adb-xxx.azuredatabricks.net
+GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID")
+
+headers = {
+    "Authorization": f"Bearer {DATABRICKS_TOKEN}",
+    "Content-Type": "application/json"
+}
 
 app = FastAPI()
 
-# 🔐 Environment variables (make sure these are set in Render)
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
-GENIE_TOKEN = os.getenv("GENIE_TOKEN")
-GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID")
-GENIE_URL = "https://adb-204242957656703.3.azuredatabricks.net/ai-genie/api/chat"
-
-# 👤 Replace with your bot's user ID from Slack logs
-BOT_USER_ID = os.getenv("BOT_USER_ID", "U0947J55Y75")
 
 @app.get("/")
 def root():
     return {"status": "ok"}
-
-
-def query_genie(question: str):
-    headers = {
-        "Authorization": f"Bearer {GENIE_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "space_id": GENIE_SPACE_ID,
-        "messages": [{"role": "user", "content": question}]
-    }
-
-    try:
-        response = requests.post(GENIE_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        print("✅ Genie API Response:", response.json())
-        return response.json()
-    except Exception as e:
-        print(f"❌ Genie API Error: {e}")
-        return {"messages": [{"content": "Sorry, there was an error getting the answer from Genie."}]}
-
-
-def post_to_slack(channel: str, text: str):
-    url = "https://slack.com/api/chat.postMessage"
-    headers = {
-        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "channel": channel,
-        "text": text
-    }
-
-    try:
-        resp = requests.post(url, headers=headers, json=payload)
-        print(f"📤 Slack Post Status: {resp.status_code} - {resp.text}")
-    except Exception as e:
-        print(f"❌ Slack Post Error: {e}")
 
 
 @app.post("/slack/events")
@@ -65,33 +28,71 @@ async def slack_events(request: Request):
     data = await request.json()
     print("🔔 Received Slack Event:", data)
 
-    # Step 1: Slack URL verification
+    # Slack URL verification challenge
     if data.get("type") == "url_verification":
         return PlainTextResponse(content=data["challenge"])
 
-    # Step 2: Handle mentions
+    # Handle app_mention event
     if data.get("type") == "event_callback":
         event = data.get("event", {})
         if event.get("type") == "app_mention":
             user = event.get("user")
+            text = event.get("text")
             channel = event.get("channel")
-            text = event.get("text", "")
 
-            # Step 3: Strip @mention to extract user question
-            question = text.replace(f"<@{BOT_USER_ID}>", "").strip()
+            question = text.split('>', 1)[-1].strip()  # Remove bot mention
             print(f"📨 Question from {user}: {question}")
 
-            # Step 4: Query Genie
-            genie_response = query_genie(question)
-            answer = genie_response.get("messages", [{}])[0].get("content", "Genie returned no response.")
+            # Step 1: Start Genie conversation
+            start_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/start-conversation"
+            response = requests.post(start_url, headers=headers, json={"content": question})
+            if response.status_code != 200:
+                post_to_slack(channel, f"❌ Failed to start Genie conversation: {response.text}")
+                return PlainTextResponse("ok")
 
-            # Step 5: Respond to Slack
-            post_to_slack(channel, answer)
+            convo_id = response.json()["conversation"]["id"]
+            msg_id = response.json()["message"]["id"]
+
+            # Step 2: Poll until Genie responds
+            message_content = None
+            for _ in range(10):  # try for 10 times
+                time.sleep(2)
+                poll_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}"
+                poll_response = requests.get(poll_url, headers=headers)
+                if poll_response.status_code != 200:
+                    continue
+
+                status = poll_response.json().get("status")
+                if status == "COMPLETED":
+                    message_content = poll_response.json().get("content", "")
+                    break
+
+            if not message_content:
+                message_content = "⚠️ Genie did not respond in time."
+
+            # Step 3: Post back to Slack
+            post_to_slack(channel, f"💬 *Answer:* {message_content}")
 
     return PlainTextResponse("ok")
 
 
+def post_to_slack(channel, message):
+    slack_url = "https://slack.com/api/chat.postMessage"
+    slack_headers = {
+        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    slack_data = {
+        "channel": channel,
+        "text": message
+    }
+
+    response = requests.post(slack_url, headers=slack_headers, json=slack_data)
+    print("📤 Slack Post Status:", response.status_code, "-", response.text)
+
+
 if __name__ == "__main__":
+    import uvicorn
     port = int(os.environ.get("PORT", "3000"))
     print(f"🚀 Starting on port {port}")
     uvicorn.run("main:app", host="0.0.0.0", port=port)
