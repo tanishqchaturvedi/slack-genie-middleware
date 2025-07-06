@@ -27,7 +27,7 @@ def root():
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
-    # ✅ Handle Slack retries
+    # ✅ Handle Slack retries (duplicate HTTP POSTs)
     if "X-Slack-Retry-Num" in request.headers:
         print("⚠️ Slack retry detected. Ignoring duplicate event.")
         return PlainTextResponse("OK", status_code=200)
@@ -35,26 +35,27 @@ async def slack_events(request: Request):
     data = await request.json()
     print("🔔 Received Slack Event:", data)
 
-    # ✅ Handle Slack URL verification challenge
+    # ✅ Handle Slack URL verification (handshake)
     if data.get("type") == "url_verification":
         return PlainTextResponse(content=data["challenge"])
 
-    # ✅ Deduplication using event_id
-    event_id = data.get("event_id")
-    if event_id in PROCESSED_EVENT_IDS:
-        print(f"⚠️ Skipping duplicate event: {event_id}")
-        return PlainTextResponse("ok")
-    PROCESSED_EVENT_IDS.append(event_id)
-
-    # ✅ Process the event
+    # ✅ Process Slack events
     if data.get("type") == "event_callback":
         event = data.get("event", {})
+        event_id = data.get("event_id")
 
-        # 🛑 Ignore bot messages and bot-to-bot loops
+        # ✅ Skip bot-generated messages
         if event.get("subtype") == "bot_message" or event.get("bot_id"):
             print(f"🛑 Ignored bot message or bot_id event_id={event_id}")
             return PlainTextResponse("ok")
 
+        # ✅ Deduplication based on event_id
+        if event_id in PROCESSED_EVENT_IDS:
+            print(f"⚠️ Skipping duplicate event: {event_id}")
+            return PlainTextResponse("ok")
+        PROCESSED_EVENT_IDS.append(event_id)
+
+        # ✅ Only respond to user-generated events
         if event.get("type") in ["app_mention", "message"]:
             user_id = event.get("user")
             channel_id = event.get("channel")
@@ -77,6 +78,7 @@ async def slack_events(request: Request):
 
                 print("🧠 Started conversation:", convo_id, msg_id)
 
+                # Poll and post answer to Slack
                 answer = poll_for_answer(convo_id, msg_id, question)
                 post_to_slack(channel_id, answer, thread_ts)
 
