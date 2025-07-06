@@ -25,6 +25,8 @@ HEADERS = {
 def root():
     return {"status": "ok"}
 
+ANSWERED_THREADS = set()
+
 @app.post("/slack/events")
 async def slack_events(request: Request):
     # ✅ Handle Slack retries (duplicate HTTP POSTs)
@@ -35,34 +37,40 @@ async def slack_events(request: Request):
     data = await request.json()
     print("🔔 Received Slack Event:", data)
 
-    # ✅ Handle Slack URL verification (handshake)
+    # ✅ Slack handshake (verification)
     if data.get("type") == "url_verification":
         return PlainTextResponse(content=data["challenge"])
 
-    # ✅ Process Slack events
+    # ✅ Event processing
     if data.get("type") == "event_callback":
         event = data.get("event", {})
         event_id = data.get("event_id")
 
-        # ✅ Skip bot-generated messages
+        # ✅ Ignore bot messages
         if event.get("subtype") == "bot_message" or event.get("bot_id"):
             print(f"🛑 Ignored bot message or bot_id event_id={event_id}")
             return PlainTextResponse("ok")
 
-        # ✅ Deduplication based on event_id
+        # ✅ Skip if already processed
         if event_id in PROCESSED_EVENT_IDS:
             print(f"⚠️ Skipping duplicate event: {event_id}")
             return PlainTextResponse("ok")
         PROCESSED_EVENT_IDS.append(event_id)
 
-        # ✅ Only respond to user-generated events
+        # ✅ Only handle user-generated events
         if event.get("type") in ["app_mention", "message"]:
             user_id = event.get("user")
             channel_id = event.get("channel")
             full_text = event.get("text", "")
             thread_ts = event.get("thread_ts") or event.get("ts")
-            question = extract_question_from_text(full_text)
 
+            # ✅ Avoid responding multiple times in same thread
+            if thread_ts in ANSWERED_THREADS:
+                print(f"⚠️ Already answered thread: {thread_ts}")
+                return PlainTextResponse("ok")
+            ANSWERED_THREADS.add(thread_ts)
+
+            question = extract_question_from_text(full_text)
             print(f"📨 Question from {user_id}: {question}")
 
             try:
@@ -75,10 +83,9 @@ async def slack_events(request: Request):
                 convo = res.json()
                 convo_id = convo["conversation_id"]
                 msg_id = convo["message_id"]
-
                 print("🧠 Started conversation:", convo_id, msg_id)
 
-                # Poll and post answer to Slack
+                # Get and post answer
                 answer = poll_for_answer(convo_id, msg_id, question)
                 post_to_slack(channel_id, answer, thread_ts)
 
