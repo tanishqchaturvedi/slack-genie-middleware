@@ -49,9 +49,13 @@ async def slack_events(request: Request):
     # ✅ Process the event
     if data.get("type") == "event_callback":
         event = data.get("event", {})
-        
-        # ✅ Prevent bot-to-bot feedback loop
-        if event.get("type") in ["app_mention", "message"] and not event.get("bot_id"):
+
+        # 🛑 Ignore bot messages and bot-to-bot loops
+        if event.get("subtype") == "bot_message" or event.get("bot_id"):
+            print(f"🛑 Ignored bot message or bot_id event_id={event_id}")
+            return PlainTextResponse("ok")
+
+        if event.get("type") in ["app_mention", "message"]:
             user_id = event.get("user")
             channel_id = event.get("channel")
             full_text = event.get("text", "")
