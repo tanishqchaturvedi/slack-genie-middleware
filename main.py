@@ -27,24 +27,31 @@ def root():
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
+    # ✅ Handle Slack retries
+    if "X-Slack-Retry-Num" in request.headers:
+        print("⚠️ Slack retry detected. Ignoring duplicate event.")
+        return PlainTextResponse("OK", status_code=200)
+
     data = await request.json()
     print("🔔 Received Slack Event:", data)
 
-    # Handle Slack URL verification
+    # ✅ Handle Slack URL verification challenge
     if data.get("type") == "url_verification":
         return PlainTextResponse(content=data["challenge"])
 
-    # Deduplication using event_id
+    # ✅ Deduplication using event_id
     event_id = data.get("event_id")
     if event_id in PROCESSED_EVENT_IDS:
         print(f"⚠️ Skipping duplicate event: {event_id}")
         return PlainTextResponse("ok")
     PROCESSED_EVENT_IDS.append(event_id)
 
-    # Process the event
+    # ✅ Process the event
     if data.get("type") == "event_callback":
         event = data.get("event", {})
-        if event.get("type") in ["app_mention", "message"] and "bot_id" not in event:
+        
+        # ✅ Prevent bot-to-bot feedback loop
+        if event.get("type") in ["app_mention", "message"] and not event.get("bot_id"):
             user_id = event.get("user")
             channel_id = event.get("channel")
             full_text = event.get("text", "")
