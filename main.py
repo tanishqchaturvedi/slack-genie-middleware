@@ -107,9 +107,10 @@ def poll_for_answer(convo_id, msg_id, question, timeout=30):
         if res.status_code == 200:
             msg = res.json()
             if msg.get("status") == "COMPLETED":
+                reasoning = msg.get("content", "") or "No reasoning provided."
                 attachments = msg.get("attachments", [])
-                reasoning = msg.get("content", "")  # Explanation or reasoning
 
+                # ✅ Case 1: SQL + Table results exist
                 if attachments:
                     attachment = attachments[0]
                     query = attachment.get("query", {}).get("query")
@@ -121,8 +122,8 @@ def poll_for_answer(convo_id, msg_id, question, timeout=30):
                         result_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}/attachments/{attachment_id}/query-result"
                         result_res = requests.get(result_url, headers=HEADERS)
                         if result_res.status_code == 200:
-                            result_json = result_res.json()
                             try:
+                                result_json = result_res.json()
                                 rows = result_json["statement_response"]["result"]["data_array"]
                                 columns = result_json["statement_response"]["manifest"]["schema"]["columns"]
                                 if rows and columns:
@@ -130,17 +131,17 @@ def poll_for_answer(convo_id, msg_id, question, timeout=30):
                                     first_row = rows[0]
                                     result_text = "\n".join(f"*{h}:* {v}" for h, v in zip(headers, first_row))
                             except Exception as e:
-                                print("⚠️ Failed parsing result:", e)
+                                print("⚠️ Result parse error:", e)
 
                     return (
                         f":speech_balloon: *Question:*\n{question}\n\n"
-                        f":bar_chart: *SQL:*\n```sql\n{query}\n```\n\n"
-                        f"🧾 *Rows Returned:* {row_count}\n\n"
+                        f":bar_chart: *SQL:*\n```sql\n{query or 'None'}\n```\n\n"
+                        f":receipt: *Rows Returned:* {row_count}\n\n"
                         f":page_facing_up: *Results:*\n{result_text or '_No data returned_'}"
                     )
 
-                # If no attachment but natural language answer is present
-                elif reasoning:
+                # ✅ Case 2: Only explanation / description
+                if reasoning:
                     return (
                         f":speech_balloon: *Question:*\n{question}\n\n"
                         f":page_facing_up: *Explanation:*\n_{reasoning}_"
