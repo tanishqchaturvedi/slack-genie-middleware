@@ -98,7 +98,7 @@ async def slack_events(request: Request):
 def extract_question_from_text(text: str) -> str:
     return text.split(">", 1)[-1].strip() if ">" in text else text.strip()
 
-def poll_for_answer(convo_id, msg_id, question, timeout=30):
+def poll_for_answers(convo_id, msg_id, question, timeout=30):
     poll_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}"
 
     for _ in range(timeout):
@@ -107,73 +107,61 @@ def poll_for_answer(convo_id, msg_id, question, timeout=30):
         if res.status_code == 200:
             msg = res.json()
             if msg.get("status") == "COMPLETED":
-                reasoning = msg.get("content", "").strip() or "_No reasoning provided._"
                 attachments = msg.get("attachments", [])
-
-                # ✅ Case 1: No attachments at all
-                if not attachments:
-                    if reasoning.lower() == question.lower():
-                        return (
-                            f":speech_balloon: *Question:*\n{question}\n\n"
-                            f":page_facing_up: *Explanation:*\n_Genie could not generate a meaningful answer._"
-                        )
-                    else:
-                        return (
-                            f":speech_balloon: *Question:*\n{question}\n\n"
-                            f":page_facing_up: *Explanation:*\n{reasoning}"
-                        )
-
-                # ✅ Case 2: Has attachments (maybe SQL query)
                 has_valid_query = False
                 query = None
                 row_count = None
                 result_text = ""
+                explanation = None
 
-                attachment = attachments[0]
-                query = attachment.get("query", {}).get("query")
-                row_count = attachment.get("query", {}).get("query_result_metadata", {}).get("row_count")
-                attachment_id = attachment.get("attachment_id")
+                if attachments:
+                    attachment = attachments[0]
+                    # 🟢 Extract explanation properly
+                    explanation = attachment.get("text", {}).get("content", "").strip()
+                    query = attachment.get("query", {}).get("query")
+                    row_count = attachment.get("query", {}).get("query_result_metadata", {}).get("row_count")
+                    attachment_id = attachment.get("attachment_id")
 
-                if query:  # 🔍 Only proceed if SQL exists
-                    has_valid_query = True
+                    if query:
+                        has_valid_query = True
 
-                    if attachment_id:
-                        result_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}/attachments/{attachment_id}/query-result"
-                        result_res = requests.get(result_url, headers=HEADERS)
-                        if result_res.status_code == 200:
-                            try:
-                                result_json = result_res.json()
-                                rows = result_json["statement_response"]["result"]["data_array"]
-                                columns = result_json["statement_response"]["manifest"]["schema"]["columns"]
-                                if rows and columns:
-                                    headers = [col["name"] for col in columns]
-                                    first_row = rows[0]
-                                    result_text = "\n".join(f"*{h}:* {v}" for h, v in zip(headers, first_row))
-                            except Exception as e:
-                                print("⚠️ Result parse error:", e)
+                        if attachment_id:
+                            result_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}/attachments/{attachment_id}/query-result"
+                            result_res = requests.get(result_url, headers=HEADERS)
+                            if result_res.status_code == 200:
+                                try:
+                                    result_json = result_res.json()
+                                    rows = result_json["statement_response"]["result"]["data_array"]
+                                    columns = result_json["statement_response"]["manifest"]["schema"]["columns"]
+                                    if rows and columns:
+                                        headers = [col["name"] for col in columns]
+                                        first_row = rows[0]
+                                        result_text = "\n".join(f"*{h}:* {v}" for h, v in zip(headers, first_row))
+                                except Exception as e:
+                                    print("⚠️ Result parse error:", e)
 
-                # ✅ Build Slack message conditionally
+                # If SQL present
                 if has_valid_query:
                     return (
-                        f":speech_balloon: *Question:*\n{question}\n\n"
-                        f":bar_chart: *SQL:*\n```sql\n{query}\n```\n\n"
-                        f":receipt: *Rows Returned:* {row_count}\n\n"
-                        f":page_facing_up: *Results:*\n{result_text or '_No data returned_'}"
+                        #f":speech_balloon: *Question:*\n{question}\n\n"
+                        f"*SQL:*\n```sql\n{query}\n```\n\n"
+                        f" *Rows Returned:* {row_count}\n\n"
+                        f"*Results:*\n{result_text or '_No data returned_'}"
                     )
-                else:
-                    # 🔁 Final fallback — attachment exists but no valid SQL
-                    if reasoning.lower() == question.lower():
-                        return (
-                            f":speech_balloon: *Question:*\n{question}\n\n"
-                            f":page_facing_up: *Explanation:*\n_Genie could not generate a meaningful answer._"
-                        )
-                    else:
-                        return (
-                            f":speech_balloon: *Question:*\n{question}\n\n"
-                            f":page_facing_up: *Explanation:*\n{reasoning}"
-                        )
 
-    # ⏱️ Timeout
+                # If explanation present without SQL
+                if explanation and explanation.lower() != question.lower():
+                    return (
+                        #f":speech_balloon: *Question:*\n{question}\n\n"
+                        f"{explanation}"
+                    )
+
+                # If Genie just echoed question or gave nothing
+                return (
+                    #f":speech_balloon: *Question:*\n{question}\n\n"
+                    f"Genie could not generate a meaningful answer._"
+                )
+
     return ":hourglass_flowing_sand: Timed out waiting for Genie response."
 
 def post_to_slack(channel, text, thread_ts=None):
