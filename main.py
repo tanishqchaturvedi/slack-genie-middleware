@@ -107,44 +107,51 @@ def poll_for_answer(convo_id, msg_id, question, timeout=30):
         if res.status_code == 200:
             msg = res.json()
             if msg.get("status") == "COMPLETED":
-                reasoning = msg.get("content", "") or "No reasoning provided."
+                reasoning = msg.get("content", "") or "_No reasoning provided._"
                 attachments = msg.get("attachments", [])
 
-                # ✅ Case 1: SQL + Table results exist
+                # Check if attachment contains a valid SQL query
+                has_valid_query = False
+                result_text = ""
+                query = None
+                row_count = None
+
                 if attachments:
                     attachment = attachments[0]
                     query = attachment.get("query", {}).get("query")
                     row_count = attachment.get("query", {}).get("query_result_metadata", {}).get("row_count")
                     attachment_id = attachment.get("attachment_id")
 
-                    result_text = ""
-                    if attachment_id:
-                        result_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}/attachments/{attachment_id}/query-result"
-                        result_res = requests.get(result_url, headers=HEADERS)
-                        if result_res.status_code == 200:
-                            try:
-                                result_json = result_res.json()
-                                rows = result_json["statement_response"]["result"]["data_array"]
-                                columns = result_json["statement_response"]["manifest"]["schema"]["columns"]
-                                if rows and columns:
-                                    headers = [col["name"] for col in columns]
-                                    first_row = rows[0]
-                                    result_text = "\n".join(f"*{h}:* {v}" for h, v in zip(headers, first_row))
-                            except Exception as e:
-                                print("⚠️ Result parse error:", e)
+                    if query:  # ✅ Only proceed if SQL exists
+                        has_valid_query = True
 
+                        if attachment_id:
+                            result_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}/attachments/{attachment_id}/query-result"
+                            result_res = requests.get(result_url, headers=HEADERS)
+                            if result_res.status_code == 200:
+                                try:
+                                    result_json = result_res.json()
+                                    rows = result_json["statement_response"]["result"]["data_array"]
+                                    columns = result_json["statement_response"]["manifest"]["schema"]["columns"]
+                                    if rows and columns:
+                                        headers = [col["name"] for col in columns]
+                                        first_row = rows[0]
+                                        result_text = "\n".join(f"*{h}:* {v}" for h, v in zip(headers, first_row))
+                                except Exception as e:
+                                    print("⚠️ Result parse error:", e)
+
+                # ✅ Build Slack message conditionally
+                if has_valid_query:
                     return (
                         f":speech_balloon: *Question:*\n{question}\n\n"
-                        f":bar_chart: *SQL:*\n```sql\n{query or 'None'}\n```\n\n"
+                        f":bar_chart: *SQL:*\n```sql\n{query}\n```\n\n"
                         f":receipt: *Rows Returned:* {row_count}\n\n"
                         f":page_facing_up: *Results:*\n{result_text or '_No data returned_'}"
                     )
-
-                # ✅ Case 2: Only explanation / description
-                if reasoning:
+                else:
                     return (
                         f":speech_balloon: *Question:*\n{question}\n\n"
-                        f":page_facing_up: *Explanation:*\n_{reasoning}_"
+                        f":page_facing_up: *Explanation:*\n{reasoning}"
                     )
 
     return ":hourglass_flowing_sand: Timed out waiting for Genie response."
