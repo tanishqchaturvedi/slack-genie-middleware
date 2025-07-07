@@ -108,6 +108,8 @@ def poll_for_answer(convo_id, msg_id, question, timeout=30):
             msg = res.json()
             if msg.get("status") == "COMPLETED":
                 attachments = msg.get("attachments", [])
+                reasoning = msg.get("content", "")  # Explanation or reasoning
+
                 if attachments:
                     attachment = attachments[0]
                     query = attachment.get("query", {}).get("query")
@@ -136,6 +138,14 @@ def poll_for_answer(convo_id, msg_id, question, timeout=30):
                         f"🧾 *Rows Returned:* {row_count}\n\n"
                         f":page_facing_up: *Results:*\n{result_text or '_No data returned_'}"
                     )
+
+                # If no attachment but natural language answer is present
+                elif reasoning:
+                    return (
+                        f":speech_balloon: *Question:*\n{question}\n\n"
+                        f":page_facing_up: *Explanation:*\n_{reasoning}_"
+                    )
+
     return ":hourglass_flowing_sand: Timed out waiting for Genie response."
 
 def post_to_slack(channel, text, thread_ts=None):
