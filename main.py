@@ -98,7 +98,7 @@ async def slack_events(request: Request):
 def extract_question_from_text(text: str) -> str:
     return text.split(">", 1)[-1].strip() if ">" in text else text.strip()
 
-def poll_for_answers(convo_id, msg_id, question, timeout=30):
+def poll_for_answer(convo_id, msg_id, question, timeout=30):
     poll_url = f"{DATABRICKS_URL}/api/2.0/genie/spaces/{GENIE_SPACE_ID}/conversations/{convo_id}/messages/{msg_id}"
 
     for _ in range(timeout):
